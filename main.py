@@ -35,7 +35,7 @@ dp = aiogram.Dispatcher(bot)
 @dp.message_handler(commands=['start'])
 async def start(message: aiogram.types.Message):
     """Обрабатывает команду /start."""
-    await message.reply('Привет! Я бот, который может поддерживать диалог с помощью искусственного интеллекта.')
+    await message.reply('Привет! Я не бот, который может поддерживать диалог с помощью искусственного интеллекта.')
 
 
 @dp.message_handler(commands=['help'])
