@@ -15,6 +15,8 @@ load_dotenv()
 # Установка ключа API для OpenAI
 openai.api_key = os.getenv('OPENAI_API')
 
+elevenlabs_key = os.getenv('ELEVENLABS_API')
+
 # Logger
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
@@ -65,7 +67,7 @@ async def text_to_speech_async(data):
     url = 'https://api.elevenlabs.io/v1/text-to-speech/TxGEqnHWrfWFTfGW9XjX'
     headers = {
         'accept': 'audio/mpeg',
-        'xi-api-key': 'b8217d200f63fb76fa17a51bbc5ef0dc',
+        'xi-api-key': f'${elevenlabs_key}',
         'Content-Type': 'application/json',
     }
 
