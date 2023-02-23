@@ -14,6 +14,7 @@ from aiogram import types
 from dotenv import load_dotenv
 import aiomysql
 import re
+import json
 load_dotenv()
 
 
@@ -198,11 +199,16 @@ class ChatBot:
         self.dp = Dispatcher(self.bot)
         self.translator = Translator()
 
+        self.language_mode = 'eng'
+        self.interaction_mode = 'text'  # initialize the user's current mode as text
+        self.last_message_bot = None  # initialize the last message as None
+        self.last_message_user = None
+
         self.dp.register_message_handler(self.welcome, commands=['start'])
         self.dp.register_message_handler(
-            self.chat_mode_menu, commands=['mode'])
+            self.chat_mode_menu, commands=['mode', 'language'])  # change to accept both commands
         self.dp.register_message_handler(
-            self.translate_message, commands=['translate'])
+            self.translation_command_handler, commands=['translate'])
         self.dp.register_message_handler(
             self.transcript_message, commands=['transcribe'])
         self.dp.register_message_handler(
@@ -211,66 +217,93 @@ class ChatBot:
         self.dp.register_callback_query_handler(
             self.handle_callback_query)
 
-        self.current_mode = 'text'  # initialize the user's current mode as text
-        self.last_message_bot = None  # initialize the last message as None
-        self.last_message_user = None
-
     def start(self):
         executor.start_polling(self.dp, skip_updates=True)
 
-    async def check_grammar(self, message: Message) -> None:
+    async def check_grammar(self, message: Message):
         await self.bot.send_chat_action(message.chat.id, ChatActions.TYPING)
+        print(self.last_message_user)
         if not self.last_message_user:
             await self.bot.send_message(message.chat.id, "Sorry, no message for the grammar check.")
-        prompt = f"Fix grammar and typos: \"{self.last_message_user}\"\nAnd give specific advice on what rule to learn so as not to make this mistake again, and show example. In the form of:\nCorrect sentence:\nExplanation:\nExample rule:"
-        try:
-            response = await self.openai_service.generate_response(prompt, 1, 1, 0, 0, None)
-            await self.bot.send_message(message.chat.id, response)
-        except Exception as e:
-            logging.error(f"Failed to check_grammar message: {e}")
-            await self.bot.send_message(message.chat.id,
-                                        "Sorry, I couldn't run the grammar check on the message. Please try again later.")
+        else:
+            prompt = f"Fix grammar and typos: \"{self.last_message_user}\"\nAnd give specific advice on what rule to learn so as not to make this mistake again, and show example. In the form of:\nCorrect sentence:\nExplanation:\nExample rule:"
+            try:
+                response = await self.openai_service.generate_response(prompt, 1, 1, 0, 0, None)
+                await self.bot.send_message(message.chat.id, response)
+            except Exception as e:
+                logging.error(f"Failed to check_grammar message: {e}")
+                await self.bot.send_message(message.chat.id,
+                                            "Sorry, I couldn't run the grammar check on the message. Please try again later.")
 
-    async def translate_message(self, message: Message) -> None:
-        await self.bot.send_chat_action(message.chat.id, ChatActions.TYPING)
+    async def translation_command_handler(self, message: Message):
+
         if not self.last_message_bot:
             await self.bot.send_message(message.chat.id, "Sorry, there is no message to translate.")
             return
 
-        try:
-            translation = self.translator.translate(
-                self.last_message_bot, dest='ru')
-            await self.bot.send_message(message.chat.id, f"Translated message: {translation.text}")
-        except Exception as e:
-            logging.error(f"Failed to translate message: {e}")
-            await self.bot.send_message(message.chat.id, "Sorry, I couldn't translate the message. Please try again later.")
+        await self.bot.send_chat_action(message.chat.id, ChatActions.TYPING)
+        await self.translate_message(message.chat.id, self.last_message_bot, 'ru', 'en')
 
-    async def transcript_message(self, message: Message) -> None:
-        if self.current_mode != 'voice':
+    async def translate_message(self, chat_id, message,  targetLang, sourceLang):
+        if not message:
+            await self.bot.send_message(chat_id, "Sorry, there is no message to translate.")
+            return
+        body = {
+            "targetLanguageCode": targetLang,
+            "sourceLanguageCode": sourceLang,
+            "texts": [message],
+            "folderId": os.getenv('FOLDER_ID'),
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {os.getenv('IAM_TOKEN')}"
+        }
+
+        async with aiohttp.ClientSession(headers=headers) as session:
+
+            await self.bot.send_chat_action(chat_id, ChatActions.TYPING)
+
+            try:
+                async with session.post('https://translate.api.cloud.yandex.net/translate/v2/translate',
+                                        json=body) as response:
+                    response_dict = json.loads(await response.text())
+                    await self.bot.send_message(chat_id, f"Translated message:\n{response_dict['translations'][0]['text']}")
+                    return response_dict['translations'][0]['text']
+            except Exception as e:
+                logging.error(f"Failed to translate message: {e}")
+                await self.bot.send_message(chat_id, "Sorry, I couldn't translate the message. Please try again later.")
+
+    async def transcript_message(self, message: Message):
+        if self.interaction_mode != 'voice':
             await self.bot.send_message(message.chat.id, "Sorry, the transcribe command is only available in voice mode.")
         elif not self.last_message_bot:
             await self.bot.send_message(message.chat.id, "Sorry, there is no message to transcribe.")
         else:
             await self.bot.send_message(message.chat.id,  self.last_message_bot)
 
-    async def chat_mode_menu(self, message) -> None:
+    async def chat_mode_menu(self, message):
         keyboard = InlineKeyboardMarkup(row_width=2)
-        text_button = InlineKeyboardButton(
-            'Text', callback_data='text')
-        voice_button = InlineKeyboardButton(
-            'Voice', callback_data='voice')
-        keyboard.add(text_button, voice_button)
-        await self.bot.send_message(
-            message.chat.id, 'Please choose a chat mode:',
-            reply_markup=keyboard)
+        if message.text == '/mode':
+            text_button = InlineKeyboardButton('Text', callback_data='text')
+            voice_button = InlineKeyboardButton('Voice', callback_data='voice')
+            await self.bot.send_message(message.chat.id, 'Please choose a chat mode:', reply_markup=keyboard.add(text_button, voice_button))
+        elif message.text == '/language':
+            russian_button = InlineKeyboardButton(
+                'Russian', callback_data='rus')
+            english_button = InlineKeyboardButton(
+                'English', callback_data='eng')
+            await self.bot.send_message(message.chat.id, "Please сhoose language:", reply_markup=keyboard.add(russian_button, english_button))
 
-    async def welcome(self, message) -> None:
+    async def welcome(self, message):
         await self.bot.send_message(message.chat.id, 'Welcome!')
 
-    async def reply(self, message: Message) -> None:
+    async def reply(self, message: Message):
         chat_id: int = message.chat.id
         self.last_message_user = message.text  # save the user's last message
 
+        if self.language_mode == 'russian':
+            message.text = await self.translate_message(chat_id, message.text, 'en', 'ru')
         await self.message_history.save_message(chat_id, f"\nNick:{message.text}")
         message_history = await self.message_history.get_message_history(chat_id)
         summary: str = ''.join(message_history)
@@ -278,7 +311,7 @@ class ChatBot:
         custom_settings: str = "The friend works as an actor, has been in many movies, dumb, creative, recently won an award for best actor, sarcastic."
         prompt: str = f"{custom_settings}\n{summary}\nFriend:"
 
-        await self.bot.send_chat_action(chat_id, ChatActions.TYPING if self.current_mode == 'text' else ChatActions.RECORD_AUDIO)
+        await self.bot.send_chat_action(chat_id, ChatActions.TYPING if self.interaction_mode == 'text' else ChatActions.RECORD_AUDIO)
 
         try:
             # (prompt,temperature,top_p,frequency_penalty,presence_penalty,stop)
@@ -294,7 +327,7 @@ class ChatBot:
 
             await self.message_history.save_message(chat_id, f"\nFriend:{response}")
 
-            if self.current_mode == 'text':
+            if self.interaction_mode == 'text':
                 await self.bot.send_message(chat_id, response)
             else:
                 try:
@@ -308,11 +341,16 @@ class ChatBot:
                     await self.bot.send_message(chat_id, response)
                     logging.error(f"Failed to process message: {e}")
 
-    async def handle_callback_query(self, callback_query) -> None:
+    async def handle_callback_query(self, callback_query):
         await callback_query.answer()
-        self.current_mode = 'text' if callback_query.data == 'text' else 'voice'
+        data = callback_query.data
+        if data == 'eng' or data == 'rus':
+            self.language_mode = 'eng' if data == 'english' else 'russian'
+            await self.bot.send_message(callback_query.message.chat.id, f'You have selected {self.language_mode} language')
+        elif data == 'text' or data == 'voice':
+            self.interaction_mode = 'text' if data == 'text' else 'voice'
+            await self.bot.send_message(callback_query.message.chat.id, f'You have selected {self.interaction_mode} mode')
         await self.bot.delete_message(chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id)
-        await self.bot.send_message(callback_query.message.chat.id, f'You have selected {self.current_mode} mode')
 
 
 if __name__ == '__main__':
